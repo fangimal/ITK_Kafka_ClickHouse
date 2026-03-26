@@ -1,6 +1,9 @@
+1. [Задание](#задание)
+2. [Реализация](#реализация)
+
 ![alt text](image.png)
 
-Задание
+## Задание
 
 Реализовать систему агрегации данных в реальном времени
 
@@ -203,5 +206,176 @@ SELECT
     kafka_partition
 FROM page_views_raw
 WHERE page_id = '' OR duration_ms <= 0;
-
 ```
+
+## Реализация
+### 🚀 Быстрый старт
+#### 1. Запуск инфраструктуры
+```bash
+# Полная очистка (если нужно)
+make clean
+   
+# Запуск всех сервисов (Kafka, ClickHouse, Kafka UI)
+make up
+   
+# Проверка статуса
+docker compose ps
+```
+Ожидаемый результат:
+```
+NAME                     STATUS
+analytics-zookeeper      Up
+analytics-clickhouse     Up (healthy)
+analytics-kafka          Up
+analytics-kafka-ui       Up
+```
+
+#### 2. Запуск Producer (Генератор событий)
+```bash
+# Создание билда producer
+go build ./cmd/producer
+  
+# Обычный режим (2 события в секунду)
+go run ./cmd/producer
+
+# Пиковая нагрузка (100 событий в секунду)
+GEN_MODE=peak go run ./cmd/producer
+
+# Ночной режим (1 событие в 10 секунд)
+GEN_MODE=night go run ./cmd/producer
+
+# Синхронная отправка (гарантированная доставка)
+PRODUCER_MODE=sync go run ./cmd/producer
+
+# Пакетная отправка (batch)
+PRODUCER_MODE=batch BATCH_SIZE=100 BATCH_TIMEOUT=1s go run ./cmd/producer
+```
+
+#### 3. Запуск Consumer (Агрегатор)
+
+```bash
+# Создание билда producer
+go build ./cmd/consumer
+  
+# Запуск Consumer (чтение из Kafka → запись в ClickHouse)
+go run ./cmd/consumer 
+```
+
+#### 4. Проверка данных в ClickHouse
+```bash
+# Подключение к консоли ClickHouse
+make sql-client
+```
+##### Полезные запросы для проверки:
+```sql
+-- 1. Количество сырых событий
+SELECT count() FROM page_views_raw;
+
+-- 2. Последние 10 событий
+SELECT 
+    event_time, 
+    page_id, 
+    user_id, 
+    duration_ms, 
+    is_bounce 
+FROM page_views_raw 
+ORDER BY event_time DESC 
+LIMIT 10;
+
+-- 3. Минутная агрегация (правильный запрос для AggregatingMergeTree!)
+SELECT 
+    window_start,
+    page_id,
+    sumMerge(view_count) AS views,
+    sumMerge(total_duration) AS total_duration_ms,
+    uniqMerge(unique_users) AS unique_users,
+    sumMerge(bounce_count) AS bounce_count
+FROM page_views_agg_minute
+GROUP BY window_start, page_id
+ORDER BY window_start DESC
+LIMIT 10;
+
+-- 4. Часовая агрегация
+SELECT 
+    window_start,
+    page_id,
+    view_count,
+    avg_duration,
+    unique_users,
+    bounce_rate
+FROM page_views_agg_hour
+ORDER BY window_start DESC
+LIMIT 10;
+
+-- 5. Ошибки (Dead Letter Queue)
+SELECT 
+    error_time, 
+    error_reason, 
+    kafka_offset 
+FROM processing_errors 
+ORDER BY error_time DESC 
+LIMIT 10;
+
+-- 6. Статус Materialized Views
+SELECT 
+    name, 
+    engine 
+FROM system.tables 
+WHERE database = 'analytics' 
+  AND name LIKE '%minute%' OR name LIKE '%hour%';
+```
+
+#### 5. Работа с Kafka
+```
+# Открыть Kafka UI в браузере
+# http://localhost:8080
+
+# Создать топик (если не создан автоматически)
+make kafka-topics
+
+# Просмотр сообщений через консоль Kafka
+docker exec -it analytics-kafka kafka-console-consumer \
+    --bootstrap-server localhost:9092 \
+    --topic page_views \
+    --from-beginning \
+    --max-messages 10
+```
+#### 6. Управление инфраструктурой
+```
+# Остановить все сервисы (сохраняя данные)
+make down
+
+# Полная очистка (включая тома с данными)
+make clean
+
+# Просмотр логов всех сервисов
+make logs
+
+# Просмотр логов конкретного сервиса
+docker compose logs -f clickhouse
+docker compose logs -f kafka
+docker compose logs -f consumer
+```
+#### Архитектура системы
+```bash
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│   PRODUCER      │      │     KAFKA       │      │   CONSUMER      │
+│  (cmd/producer) │ ───► │  (page_views)   │ ───► │ (cmd/consumer)  │
+│  • Генерация    │      │  • Буферизация  │      │  • Валидация    │
+│  • Сериализация │      │  • Партиции     │      │  • Batch INSERT │
+│  • Отправка     │      │  • Оффсеты      │      │  • Commit       │
+└─────────────────┘      └────────┬────────┘      └────────┬────────┘
+                                 │                        │
+                                 ▼                        ▼
+                         ┌─────────────────────────────────────┐
+                         │           CLICKHOUSE                │
+                         │  • page_views_raw (сырые данные)    │
+                         │  • page_views_agg_minute (MV)       │
+                         │  • page_views_agg_hour (MV)         │
+                         │  • processing_errors (DLQ)          │
+                         └─────────────────────────────────────┘
+```
+   
+   
+
+
