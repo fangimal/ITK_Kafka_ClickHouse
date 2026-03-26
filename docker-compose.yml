@@ -1,0 +1,68 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: analytics-clickhouse
+    ports:
+      - "8123:8123"  # HTTP интерфейс (для веб-клиента, драйверов)
+      - "9000:9000"  # Native TCP (для быстрого взаимодействия Go-клиента)
+    volumes:
+      - ./schema/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_DB=analytics
+      - CLICKHOUSE_USER=user
+      - CLICKHOUSE_PASSWORD=password
+    networks:
+      - analytics-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.9.6
+    container_name: analytics-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - analytics-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.9.6
+    container_name: analytics-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092" 
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - analytics-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: analytics-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka
+    networks:
+      - analytics-net
+
+volumes:
+  clickhouse_data:
+
+networks:
+  analytics-net:  
+    driver: bridge
