@@ -40,7 +40,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	// Проверка подключения
-	if err := conn.Ping(context.Background()); err != nil {
+	if err = conn.Ping(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
 
@@ -51,7 +51,6 @@ func NewClient(cfg Config) (*Client, error) {
 
 // BatchInsert вставляет пакет событий в page_views_raw
 func (c *Client) BatchInsert(ctx context.Context, events []Event) error {
-	// ✅ Явно указываем все 12 колонок в INSERT
 	batch, err := c.conn.PrepareBatch(ctx, `
 		INSERT INTO page_views_raw 
 		(event_date, event_time, page_id, user_id, duration_ms, 
@@ -63,19 +62,19 @@ func (c *Client) BatchInsert(ctx context.Context, events []Event) error {
 	}
 
 	for _, e := range events {
-		err := batch.Append(
-			e.EventDate,      // 1. event_date
-			e.EventTime,      // 2. event_time
-			e.PageID,         // 3. page_id
-			e.UserID,         // 4. user_id
-			e.DurationMs,     // 5. duration_ms
-			e.UserAgent,      // 6. user_agent
-			e.IPAddress,      // 7. ip_address
-			e.Region,         // 8. region
-			e.IsBounce,       // 9. is_bounce
-			e.KafkaOffset,    // 10. kafka_offset
-			e.KafkaPartition, // 11. kafka_partition
-			time.Now(),       // 12. processed_time ✅ ДОБАВЛЕНО
+		err = batch.Append(
+			e.EventDate,
+			e.EventTime,
+			e.PageID,
+			e.UserID,
+			e.DurationMs,
+			e.UserAgent,
+			e.IPAddress,
+			e.Region,
+			e.IsBounce,
+			e.KafkaOffset,
+			e.KafkaPartition,
+			time.Now(),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append event: %w", err)
@@ -94,7 +93,6 @@ func (c *Client) InsertError(ctx context.Context, rawMsg string, reason string, 
 	`, time.Now(), rawMsg, reason, offset, partition)
 }
 
-// Close закрывает соединение
 func (c *Client) Close() error {
 	return c.conn.Close()
 }

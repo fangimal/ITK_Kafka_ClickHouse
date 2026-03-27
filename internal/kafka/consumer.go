@@ -42,7 +42,6 @@ type Message struct {
 	Topic     string
 }
 
-// NewConsumer создаёт нового Consumer
 func NewConsumer(cfg *ConsumerConfig, handler MessageHandler) (*Consumer, error) {
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Version = sarama.V2_8_0_0
@@ -93,9 +92,8 @@ func (c *Consumer) Cleanup(sarama.ConsumerGroupSession) error {
 }
 
 // ConsumeClaim обрабатывает сообщения из партиции
-// ❗ ИСПРАВЛЕНО: убран ctx из параметров, берём из session.Context()
 func (c *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	ctx := session.Context() // ✅ Контекст берём из сессии
+	ctx := session.Context()
 
 	var batch []Message
 	timer := time.NewTimer(c.config.BatchTimeout)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/fangimal/ITK_Kafka_ClickHouse/internal/clickhouse"
 	"github.com/fangimal/ITK_Kafka_ClickHouse/internal/config"
@@ -14,23 +15,47 @@ import (
 	"github.com/fangimal/ITK_Kafka_ClickHouse/internal/kafka"
 )
 
-// ClickHouseHandler реализует обработку сообщений
 type ClickHouseHandler struct {
-	chClient *clickhouse.Client
+	chClient   *clickhouse.Client
+	maxRetries int
 }
 
 func (h *ClickHouseHandler) Handle(messages []kafka.Message) error {
+	var lastErr error
+
+	for attempt := 0; attempt <= h.maxRetries; attempt++ {
+		err := h.handleBatch(messages)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		log.Printf("Batch processing failed (attempt %d/%d): %v", attempt+1, h.maxRetries+1, err)
+
+		if attempt < h.maxRetries {
+			// Exponential backoff
+			backoff := time.Duration(100*(1<<attempt)) * time.Millisecond
+			log.Printf("Retrying in %v...", backoff)
+			time.Sleep(backoff)
+		}
+	}
+
+	return lastErr
+}
+
+func (h *ClickHouseHandler) handleBatch(messages []kafka.Message) error {
 	var events []clickhouse.Event
 
 	for _, msg := range messages {
 		var ev event.PageViewEvent
 		if err := json.Unmarshal(msg.Value, &ev); err != nil {
-			return err
+			// Некорректный JSON - сразу в DLQ
+			h.chClient.InsertError(context.Background(), string(msg.Value), "invalid JSON", msg.Offset, msg.Partition)
+			continue
 		}
 
 		// Валидация
 		if err := validateEvent(ev); err != nil {
-			// Отправляем в DLQ
 			h.chClient.InsertError(context.Background(), string(msg.Value), err.Error(), msg.Offset, msg.Partition)
 			continue
 		}
@@ -120,9 +145,11 @@ func main() {
 	defer chClient.Close()
 
 	// Создание обработчика
-	handler := &ClickHouseHandler{chClient: chClient}
+	handler := &ClickHouseHandler{
+		chClient:   chClient,
+		maxRetries: 3,
+	}
 
-	// Создание Consumer
 	consumer, err := kafka.NewConsumer(&kafka.ConsumerConfig{
 		Brokers:      cfg.KafkaBrokers,
 		Topic:        cfg.KafkaTopic,
@@ -151,7 +178,7 @@ func main() {
 
 	// Запуск потребления
 	log.Println("Starting Consumer...")
-	if err := consumer.Consume(ctx); err != nil {
+	if err = consumer.Consume(ctx); err != nil {
 		log.Fatalf("Consumer error: %v", err)
 	}
 }

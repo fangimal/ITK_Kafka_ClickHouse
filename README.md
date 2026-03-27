@@ -207,14 +207,11 @@ SELECT
 FROM page_views_raw
 WHERE page_id = '' OR duration_ms <= 0;
 ```
-
+---
 ## Реализация
 ### 🚀 Быстрый старт
 #### 1. Запуск инфраструктуры
-```bash
-# Полная очистка (если нужно)
-make clean
-   
+```bash 
 # Запуск всех сервисов (Kafka, ClickHouse, Kafka UI)
 make up
    
@@ -229,41 +226,36 @@ analytics-clickhouse     Up (healthy)
 analytics-kafka          Up
 analytics-kafka-ui       Up
 ```
-
+---
 #### 2. Запуск Producer (Генератор событий)
 ```bash
 # Создание билда producer
-go build ./cmd/producer
-  
-# Обычный режим (2 события в секунду)
-go run ./cmd/producer
+# Обычный режим (2 события/сек)
+make producer
 
-# Пиковая нагрузка (100 событий в секунду)
-GEN_MODE=peak go run ./cmd/producer
+# Пиковая нагрузка (100 событий/сек)
+GEN_MODE=peak make producer
 
-# Ночной режим (1 событие в 10 секунд)
-GEN_MODE=night go run ./cmd/producer
+# Ночной режим (1 событие/10 сек)
+GEN_MODE=night make producer
 
-# Синхронная отправка (гарантированная доставка)
-PRODUCER_MODE=sync go run ./cmd/producer
+# Синхронная отправка
+PRODUCER_MODE=sync make producer
 
-# Пакетная отправка (batch)
-PRODUCER_MODE=batch BATCH_SIZE=100 BATCH_TIMEOUT=1s go run ./cmd/producer
+# Пакетная отправка
+PRODUCER_MODE=batch BATCH_SIZE=100 BATCH_TIMEOUT=1s make producer
 ```
-
+---
 #### 3. Запуск Consumer (Агрегатор)
 
 ```bash
-# Создание билда producer
-go build ./cmd/consumer
-  
-# Запуск Consumer (чтение из Kafka → запись в ClickHouse)
-go run ./cmd/consumer 
+# В новом терминале
+make consumer
 ```
-
+---
 #### 4. Проверка данных в ClickHouse
 ```bash
-# Подключение к консоли ClickHouse
+# Подключение к ClickHouse
 make sql-client
 ```
 ##### Полезные запросы для проверки:
@@ -325,6 +317,17 @@ WHERE database = 'analytics'
   AND name LIKE '%minute%' OR name LIKE '%hour%';
 ```
 
+##### HTTP API (Producer)
+Producer предоставляет эндпоинты на порту 8081:
+
+Метод | Эндпоинт | Описание | Пример |
+|-------|----------|----------|--------|
+GET | /metrics | Статистика отправки | `curl localhost:8081/metrics` |
+GET | /config | Текущая конфигурация | `curl localhost:8081/config` |
+PUT | /config | Обновить конфигурацию | `curl -X PUT ... -d '{"pause":true}'` |
+GET | /health | Health check | `curl localhost:8081/health` |
+
+---
 #### 5. Работа с Kafka
 ```
 # Открыть Kafka UI в браузере
@@ -340,42 +343,103 @@ docker exec -it analytics-kafka kafka-console-consumer \
     --from-beginning \
     --max-messages 10
 ```
+---
 #### 6. Управление инфраструктурой
 ```
-# Остановить все сервисы (сохраняя данные)
-make down
+# Получить все возможноые команды
+make help
 
-# Полная очистка (включая тома с данными)
-make clean
+# Получить метрики
+make metrics
 
-# Просмотр логов всех сервисов
-make logs
+# Поставить на паузу
+make config-pause
 
-# Просмотр логов конкретного сервиса
-docker compose logs -f clickhouse
-docker compose logs -f kafka
-docker compose logs -f consumer
+# Возобновить
+make config-resume
+
+# Переключить в режим "пик"
+make config-set
 ```
+---
 #### Архитектура системы
-```bash
+```
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │   PRODUCER      │      │     KAFKA       │      │   CONSUMER      │
 │  (cmd/producer) │ ───► │  (page_views)   │ ───► │ (cmd/consumer)  │
 │  • Генерация    │      │  • Буферизация  │      │  • Валидация    │
-│  • Сериализация │      │  • Партиции     │      │  • Batch INSERT │
-│  • Отправка     │      │  • Оффсеты      │      │  • Commit       │
+│  • Метрики      │      │  • Партиции     │      │  • Batch INSERT │
+│  • HTTP API     │      │  • Оффсеты      │      │  • DLQ          │
+│  • Retry        │      │                 │      │  • Retry        │
 └─────────────────┘      └────────┬────────┘      └────────┬────────┘
-                                 │                        │
-                                 ▼                        ▼
+                                  │                        │
+                                  ▼                        ▼
                          ┌─────────────────────────────────────┐
                          │           CLICKHOUSE                │
-                         │  • page_views_raw (сырые данные)    │
-                         │  • page_views_agg_minute (MV)       │
-                         │  • page_views_agg_hour (MV)         │
-                         │  • processing_errors (DLQ)          │
+                         │  • page_views_raw (MergeTree)       │
+                         │  • page_views_agg_minute + MV       │
+                         │  • page_views_agg_hour (таблица)    │
+                         │    └─ заполняется по расписанию     │
+                         │  • processing_errors + MV           │
                          └─────────────────────────────────────┘
 ```
-   
+
+### Реализация требований:
+
+| Требование | Статус | Файл |
+|------------|--------|------|
+| **Структура события PageViewEvent** | ✅ | [`internal/event/event.go`](internal/event/event.go) |
+| **Режимы: regular/peak/night** | ✅ | [`cmd/producer/main.go`](cmd/producer/main.go) |
+| **Типы событий: нормальные/броунсы/ошибки** | ✅ | [`internal/event/event.go`](internal/event/event.go) |
+| **Синхронная/асинхронная отправка** | ✅ | [`internal/kafka/producer.go`](internal/kafka/producer.go) |
+| **Batch отправка** | ✅ | [`internal/kafka/producer.go`](internal/kafka/producer.go) |
+| **Retry с exponential backoff** | ✅ | [`internal/kafka/producer.go`](internal/kafka/producer.go) |
+| **Партиционирование по ключу** | ✅ | [`internal/event/event.go`](internal/event/event.go) |
+| **Метрики (count, errors, latency)** | ✅ | [`internal/metrics/metrics.go`](internal/metrics/metrics.go) |
+| **HTTP API для управления** | ✅ | [`internal/http/server.go`](internal/http/server.go) |
+| **Дубликаты сообщений (1%)** | ✅ | [`cmd/producer/main.go`](cmd/producer/main.go) |
+| **Потребитель** | | |
+| Batch consumer | ✅ | [`internal/kafka/consumer.go`](internal/kafka/consumer.go) |
+| Валидация и DLQ | ✅ | [`cmd/consumer/main.go`](cmd/consumer/main.go) |
+| Retry при ошибках ClickHouse | ✅ | [`cmd/consumer/main.go`](cmd/consumer/main.go) |
+| At-least-once гарантии | ✅ | [`internal/kafka/consumer.go`](internal/kafka/consumer.go) |
+| **ClickHouse** | | |
+| Таблица page_views_raw | ✅ | [`schema/init.sql`](schema/init.sql) |
+| Таблица page_views_agg_minute + MV | ✅ | [`schema/init.sql`](schema/init.sql) |
+| Таблица page_views_agg_hour | ✅ | [`schema/init.sql`](schema/init.sql) |
+| Dead Letter Queue | ✅ | [`schema/init.sql`](schema/init.sql) |
+| **Инфраструктура** | | |
+| Docker Compose | ✅ | [`docker-compose.yml`](docker-compose.yml) |
+| Makefile с удобными командами | ✅ | [`Makefile`](Makefile) |
+| Health checks | ✅ | [`docker-compose.yml`](docker-compose.yml) |
+
+```
+
+├── cmd/
+│   ├── producer/
+│   │   └── main.go          # Точка входа Producer + HTTP API
+│   └── consumer/
+│       └── main.go          # Точка входа Consumer
+├── internal/
+│   ├── event/
+│   │   └── event.go         # Структура события + генераторы
+│   ├── kafka/
+│   │   ├── producer.go      # Kafka Producer с батчами и ретраями
+│   │   └── consumer.go      # Kafka Consumer Group с батчингом
+│   ├── clickhouse/
+│   │   └── client.go        # ClickHouse клиент с Batch INSERT
+│   ├── config/
+│   │   └── config.go        # Загрузка конфигурации из env
+│   ├── metrics/
+│   │   └── metrics.go       # Метрики сервиса (атомарные счётчики)
+│   └── http/
+│       └── server.go        # HTTP сервер для /metrics, /config, /health
+├── schema/
+│   └── init.sql             # Инициализация ClickHouse (таблицы + MV)
+├── docker-compose.yml        # Инфраструктура: Kafka, ClickHouse, UI
+├── Makefile                  # Удобные команды для разработки
+└── README.md                 # Этот файл
+```
    
 
 

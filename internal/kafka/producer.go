@@ -3,6 +3,7 @@ package kafka
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/fangimal/ITK_Kafka_ClickHouse/internal/config"
@@ -19,7 +20,7 @@ type Producer struct {
 func NewProducer(cfg *config.Config) (*Producer, error) {
 	// 1. Базовая конфигурация Sarama
 	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V2_8_0_0 // Версия брокера (совместима с 7.x)
+	saramaConfig.Version = sarama.V2_8_0_0
 
 	// 2. Настройки подтверждений (Acknowledgements)
 	// Producer.Ack = All означает, что лидер и все реплики должны подтвердить запись.
@@ -30,7 +31,7 @@ func NewProducer(cfg *config.Config) (*Producer, error) {
 	saramaConfig.Producer.Return.Errors = true    // Возвращать ошибки (для Async)
 
 	// 3. Стратегия партиционирования
-	// Мы будем выбирать стратегию в момент отправки, но по умолчанию ставим Hash
+	// Выбираем стратегию в момент отправки, но по умолчанию ставим Hash
 	// Hash использует Key сообщения для выбора партиции (наш случай с page_id)
 	saramaConfig.Producer.Partitioner = sarama.NewHashPartitioner
 
@@ -131,4 +132,28 @@ func (p *Producer) Close() error {
 		return err
 	}
 	return nil
+}
+
+// SendMessageWithRetry отправляет сообщение с ретраями и exponential backoff
+func (p *Producer) SendMessageWithRetry(key string, value []byte, maxRetries int) error {
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := p.SendMessage(key, value)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		log.Printf("Send failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
+
+		if attempt < maxRetries {
+			// Exponential backoff: 100ms, 200ms, 400ms, 800ms, ...
+			backoff := time.Duration(100*(1<<attempt)) * time.Millisecond
+			log.Printf("Retrying in %v...", backoff)
+			time.Sleep(backoff)
+		}
+	}
+
+	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }

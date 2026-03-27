@@ -98,13 +98,11 @@ func generateIPv6() string {
 	)
 }
 
-// ToJSON - сериализация события в JSON
 func (e PageViewEvent) ToJSON() ([]byte, error) {
 	return json.Marshal(e)
 }
 
 // GetPartitionKey - возвращает ключ для партиционирования (page_id)
-// Это важно для группировки событий одной страницы в одну партицию
 func (e PageViewEvent) GetPartitionKey() string {
 	return e.PageID
 }
