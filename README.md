@@ -327,6 +327,12 @@ GET | /config | Текущая конфигурация | `curl localhost:8081/c
 PUT | /config | Обновить конфигурацию | `curl -X PUT ... -d '{"pause":true}'` |
 GET | /health | Health check | `curl localhost:8081/health` |
 
+*Пример смены конфигурации*
+```bash
+curl -X PUT http://localhost:8081/config \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"night","pause":false}'
+```
 ---
 #### 5. Работа с Kafka
 ```
